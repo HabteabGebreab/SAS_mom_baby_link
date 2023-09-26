@@ -1,0 +1,229 @@
+/**************************************************************************************/
+/********** This program will accomplish 2 steps **************************************/
+/**************** Step 9: Find baby of the matched mom ********************************/
+/*********** Step 10: get first final true mom-baby match file ************************/
+/**************************************************************************************/
+
+
+/**************************************************************************************/
+/************* Step 9: Find baby of the matched mom  ***************************/
+/**************************************************************************************/
+
+/*file of already matched moms  */
+proc sort data=link&year..match&year._v43_common out=matched&year._id(keep=certkey medicaid_id);
+by medicaid_id;
+run;
+/*format matched moms*/
+data matchfmt;
+	set matched&year._id(rename=(medicaid_id=start));
+	where start ne " ";
+	by start;
+	
+	if first.start;
+	
+	label="KEEP";
+	fmtname="match";
+	type="C";
+run;
+proc format cntlin=matchfmt ;
+run;
+
+/*create a new file for all babies matched to mom by case id */
+data matched&year._id3 matched&year._id0 matched&year._id1 matched&year._id2 check;
+	set matched&year._id;
+		by medicaid_id;
+			if first.medicaid_id then count=0;
+			else count + 1;
+		if count=0 and last.medicaid_id then output matched&year._id0;
+		else if count=0 then output matched&year._id1;
+		else if count=1 then output matched&year._id2;
+		else if count=2 then output matched&year._id3;
+		else output check;
+run;
+
+data case_number_mom case_number_nomom;
+	set elig.&case_id.;
+/*	if id in the linked file*/
+	if put(recipient_id,$match.)="KEEP" then output case_number_mom;
+/*	if id not in the linked file*/
+	else output case_number_nomom;
+	proc sort nodupkey; by case_number recipient_id;
+run;
+ 
+/*undup by caseid and recipientid of linked moms*/
+proc sort data=work.case_number_mom nodupkey out=ob_case_number_m&year.(rename=(recipient_id=medicaid_id));
+	by case_number recipient_id descending beg_date;
+run;
+
+/*undup by caseid and recipientid of linked moms*/
+proc sort data=work.ob_case_number_m&year. nodupkey out=ob_case_number_mom&year.s;
+by case_number medicaid_id;
+run;
+
+/*identify babies caseid*/
+data baby_case_number&year.(keep=case_number recipient_id kdob KFN KLN KSSN KMN res_county birth_country_code beg_date);
+	set work.case_number_nomom;
+	where "01Jan&year."d le dob le "31Dec&year."d;
+	rename dob=kdob first_name=KFN last_name=KLN  ssn=KSSN mid_name=kMN gender_code=Kgender;
+run;
+proc sort data=baby_case_number&year. nodupkey out=baby_case_number&year.s; 
+by case_number recipient_id descending beg_date;
+run;
+
+proc sort data=baby_case_number&year.s nodupkey out=ob_case_number_kid&year.s;
+by case_number recipient_id;
+run;
+/*link baby and mom(vs linked) by caseid*/
+data ob_case_babyinfo&year.(keep=medicaid_id case_number recipient_id kdob KFN KLN KSSN KMN res_county birth_country_code household_status);
+	merge ob_case_number_mom&year.s(in=mom) ob_case_number_kid&year.s(in=kid);
+	by case_number;
+	if mom and kid;
+	if medicaid_id=recipient_id then delete;
+proc sort ; by medicaid_id;
+run;
+
+/*match baby to linked mom*/
+
+
+/*******************************************************************************************/
+/*************************************** 0000000 *******************************************/
+/*******************************************************************************************/
+
+%macro l_m_b(n);
+
+		data certkey_mom_baby_id&year.&n.;	
+			merge work.matched&year._id&n.(in=linked) ob_case_babyinfo&year.(in=case);
+			by medicaid_id;
+				
+			if linked and case;
+			kfn_nospace=compress(translate(kfn," ","-"," ",".", " ",",", " ","`"," ","'"));
+			kln_nospace=compress(translate(kln," ","-"," ",".", " ",",", " ","`"," ","'"));
+			drop BIRTH_COUNTRY_CODE ;
+			proc sort nodupkey; by certkey recipient_id medicaid_id;
+		run;
+		proc sort data=certkey_mom_baby_id&year.&n. nodupkey out=certkey_mom_baby_id&year._&n.;
+			by certkey medicaid_id recipient_id ;
+			where put(recipient_id,$Linked.) ne "KEEP";
+		run;
+
+		data  certkey_mom_baby_check&year._&n.;
+			merge certkey_mom_baby_id&year._&n.(in=mom)  link&year..baby&year.(in=baby);
+			by certkey;
+			if baby and mom;
+		run;
+
+		/*data vs_linked_mom_baby2019a0 link.check_link_mom_baby2019;*/
+		data vs_linked_mom_baby&year.a&n. check_link_mom_baby&year._&n.;
+		set work.certkey_mom_baby_check&year._&n.;
+			if soundex(kfn_nospace) = soundex(ifn_nospace) then fn_match=1;
+			if soundex(kln_nospace) = soundex(iln_nospace) then ln_match=1;
+		 	if kdob=idob then dob_match=1;
+			if sum(fn_match,ln_match,dob_match)=3 then output vs_linked_mom_baby&year.a&n.;
+			else output check_link_mom_baby&year._&n.;
+
+		run;
+		proc sort data=work.vs_linked_mom_baby&year.a&n. nodupkey out=vs_linked_mom_baby&year.a&n.1;
+		 by certkey recipient_id medicaid_id;
+		run;
+
+		/*check if certkey linked to more than one*/
+		data certkey_baby_id&year.count&n.;
+			set work.vs_linked_mom_baby&year.a&n.1;
+			by certkey;
+			if first.certkey then num=0;
+			else num + 1;
+
+		run;
+
+
+
+		data certkey_2id&n.(keep=certkey kssn) vs_linked_mom_baby&year._F1&n.;
+		set work.certkey_baby_id&year.count&n.;
+			by certkey;
+			 
+			if last.certkey;
+			if num ge 1 then output certkey_2id&n.;
+			else output vs_linked_mom_baby&year._F1&n.;
+		run;
+
+
+		data linked_vs_baby&year._2id&n.;
+			merge certkey_2id&n.(in=id2) certkey_baby_id&year.count&n. ;
+			by certkey ;
+			if id2;
+		run;
+
+		proc sort data=linked_vs_baby&year._2id&n. out=linked_vs_baby&year._2id&n.;
+		by certkey descending kssn household_status;
+		run;
+		proc sort data=linked_vs_baby&year._2id&n. nodupkey out=vs_linked_mom_baby&year._F2&n.;
+		by certkey ;
+		run;
+	data baby&year._idF2&n.;
+		set vs_linked_mom_baby&year._F2&n.(keep=recipient_id) vs_linked_mom_baby&year._F1&n.(keep=recipient_id);
+			proc sort; by recipient_id;
+	run; 
+			
+		data baby1fmt;
+			set baby&year._idF2&n.(rename=(recipient_id=start));
+			by start;
+			
+			if first.start;
+			
+			label="KEEP";
+			fmtname="Linked";
+			type="C";
+		run;
+		proc format cntlin=baby1fmt ;
+		run;
+
+%mend;
+%l_m_b(0);
+%l_m_b(1);
+%l_m_b(2);
+%l_m_b(3);
+
+
+	data vs_linked_mom_baby&year._F2;
+		set vs_linked_mom_baby&year._F2:;
+		proc sort nodupkey; by certkey recipient_id;
+	run;
+
+	data vs_linked_mom_baby&year._F1;
+		set vs_linked_mom_baby&year._F1:;
+			proc sort nodupkey; by  certkey recipient_id;
+	run;
+
+
+data link&year..vs_linked_mom_baby&year._F1a ;
+	set vs_linked_mom_baby&year._F1 vs_linked_mom_baby&year._F2;
+	by certkey;
+run;
+
+data certfmt;
+	set link&year..vs_linked_mom_baby&year._F1a(rename=(certkey=start));
+	by start;
+	
+	if first.start;
+	
+	label="KEEP";
+	fmtname="v32c";
+	type="C";
+run;
+proc format cntlin=certfmt ;
+run;
+
+
+	data check_link_mom_baby&year._3;
+		set check_link_mom_baby&year._:;	
+	run;
+
+	data link&year..check_link_mom_baby&year.;
+		set check_link_mom_baby&year._3;
+			where put(certkey,$v32c.) ne "KEEP";
+			proc sort nodupkey; by certkey medicaid_id recipient_id;
+	run;
+
+	proc datasets library=work 
+kill nolist;
+quit;
